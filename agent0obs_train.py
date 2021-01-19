@@ -1,0 +1,109 @@
+#LIBRARIES
+import numpy as np
+from tensorflow.python.keras.layers import LSTM, Dense, Input
+from tensorflow.python.keras.models import Model,load_model
+import tensorflow as tf
+from keras.utils import to_categorical
+from keras.losses import kullback_leibler_divergence
+from keras.losses import CategoricalCrossentropy
+from scipy.spatial.distance import cosine
+from sklearn.metrics import confusion_matrix,accuracy_score
+
+
+
+# convert an array of values into a timeseries of 3 previous steps matrix
+def create_timeseries(dataset, y):
+    dataX = []
+    dataY = []
+    for i in range(2,len(dataset)):
+        if i%25 > 1:
+            a = np.vstack((dataset[i - 2], dataset[i - 1],dataset[i]))
+            dataX.append(a)
+            dataY.append(y[i])
+    return np.asarray(dataX), np.asarray(dataY)
+
+
+#same results for same model, makes it deterministic
+np.random.seed(1234)
+tf.random.set_seed(1234)
+
+
+#reading data
+input = np.load("Transition_len18_obs.npy", allow_pickle=True)
+print(input[0])
+pre = np.asarray(input[:,0])
+a2 = np.asarray(input[:,1])
+a3 = np.asarray(input[:,2])
+post = np.asarray(input[:,3])
+#post = np.asarray(input[:,4])
+
+#flattens the np arrays
+pre = np.concatenate(pre).ravel()
+pre = np.reshape(pre, (pre.shape[0]//18,18))
+#post = np.concatenate(post).ravel()
+#post = np.reshape(post, (post.shape[0]//18,18))
+
+#prea1 = np.column_stack((pre,a1.T))
+a2a3 = np.column_stack((a2.T,a3.T))
+
+#reshapes trainX to be timeseries data with 3 previous timesteps
+#LSTM requires time series data, so this reshapes for LSTM purposes
+#X has 200000 samples, 3 timestep, 55 features
+inputX, inputY = create_timeseries(pre,a2a3)
+inputX = inputX.astype('float64')
+inputY = inputY.astype('int64')
+
+
+trainX = inputX[:180000]
+trainY = inputY[:180000]
+valX = inputX[180000:]
+valY = inputY[180000:]
+#testX = inputX[180000:]
+#testY = inputY[180000:]
+
+#two categorical arrays, one for each side of the functional network
+#testY1, testY2 = np.hsplit(testY,2)
+#testY1 = to_categorical(testY1)
+#testY2 = to_categorical(testY2)
+valY1, valY2 = np.hsplit(valY,2)
+valY1 = to_categorical(valY1)
+valY2 = to_categorical(valY2)
+trainY1, trainY2 = np.hsplit(trainY,2)
+trainY1 = to_categorical(trainY1)
+trainY2 = to_categorical(trainY2)
+
+
+
+#build functional model
+visible =Input(shape=(trainX.shape[1],trainX.shape[2]))
+hidden1 = LSTM(32, return_sequences=True, name='firstLSTMLayer')(visible)
+hidden2 = LSTM(16, name='secondLSTMLayer',return_sequences=True)(hidden1)
+#left branch decides second agent action
+hiddenLeft = LSTM(10, name='leftBranch')(hidden2)
+agent2 = Dense(5,activation='softmax',name='agent2classifier')(hiddenLeft)
+#right branch decides third agent action
+hiddenRight = LSTM(10, name='rightBranch')(hidden2)
+agent3 = Dense(5,activation='softmax',name='agent3classifier')(hiddenRight)
+
+model = Model(inputs=visible,outputs=[agent2,agent3])
+
+model.compile(optimizer='adam',
+              loss={'agent2classifier': 'categorical_crossentropy',
+                    'agent3classifier': 'categorical_crossentropy'},
+              metrics={'agent2classifier': ['acc'],
+                        'agent3classifier': ['acc']})
+print(model.summary())
+
+
+history = model.fit(trainX,
+                    y={'agent2classifier': trainY1,'agent3classifier':trainY2}, epochs=3000, batch_size=5000, verbose=2,
+                    validation_data = (valX,
+                                       {'agent2classifier': valY1,'agent3classifier':valY2}),shuffle=False)
+
+model.save('Agent0ObsNetwork.keras')
+
+
+#model = load_model("actionMultiClassNetwork.keras")
+
+
+np.save("agent0obs_history.npy", history.history, allow_pickle=True)
